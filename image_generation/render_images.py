@@ -6,6 +6,7 @@
 # of patent rights can be found in the PATENTS file in the same directory.
 
 from __future__ import print_function
+from enum import Enum
 import math, sys, random, argparse, json, os, tempfile
 from datetime import datetime as dt
 from collections import Counter
@@ -21,6 +22,13 @@ This file expects to be run from Blender like this:
 
 blender --background --python render_images.py -- [arguments to this script]
 """
+
+class Relation(Enum):
+  FULL=0
+  HIGH=1
+  LOW=2
+  NO=3
+  RANDOM=4
 
 INSIDE_BLENDER = True
 try:
@@ -81,6 +89,14 @@ parser.add_argument('--min_pixels_per_object', default=200, type=int,
 parser.add_argument('--max_retries', default=50, type=int,
     help="The number of times to try placing an object before giving up and " +
          "re-placing all objects in the scene.")
+parser.add_argument('--number_target_group_objects', default=3, type=int,
+    help="The number of objects in the target group.")
+parser.add_argument('--number_non_target_group_objects', default=6, type=int,
+    help="The number of objects that are not in the target group.")
+parser.add_argument('--target_group_relations', nargs='*', default=['FULL'],
+    help="A list of possible relations between target objects and objects in the target group.")
+parser.add_argument('--non_target_group_relations', nargs='*', default=['RANDOM'],
+    help="A list of possible relations between target objects and objects not in the target group.")
 
 # Output settings
 parser.add_argument('--start_idx', default=0, type=int,
@@ -326,111 +342,79 @@ def render_scene(args,
     bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
 
 
+def load_properties(filename):
+  # Load the property file
+  loaded_properties = {}
+  with open(filename, 'r') as f:
+    properties = json.load(f)
+    loaded_properties['color_name_to_rgba'] = {}
+    for name, rgb in properties['colors'].items():
+      rgba = [float(c) / 255.0 for c in rgb] + [1.0]
+      loaded_properties['color_name_to_rgba'][name] = rgba
+    loaded_properties['material_mapping'] = [(v, k) for k, v in properties['materials'].items()]
+    loaded_properties['object_mapping'] = [(v, k) for k, v in properties['shapes'].items()]
+    loaded_properties['size_mapping'] = list(properties['sizes'].items())
+
+  loaded_properties['shape_color_combos'] = None
+  if args.shape_color_combos_json is not None:
+    with open(args.shape_color_combos_json, 'r') as f:
+      loaded_properties['shape_color_combos'] = list(json.load(f).items())
+
+  return loaded_properties
+
 def add_random_objects(scene_struct, num_objects, args, camera):
   """
   Add random objects to the current blender scene
   """
 
-  # Load the property file
-  with open(args.properties_json, 'r') as f:
-    properties = json.load(f)
-    color_name_to_rgba = {}
-    for name, rgb in properties['colors'].items():
-      rgba = [float(c) / 255.0 for c in rgb] + [1.0]
-      color_name_to_rgba[name] = rgba
-    material_mapping = [(v, k) for k, v in properties['materials'].items()]
-    object_mapping = [(v, k) for k, v in properties['shapes'].items()]
-    size_mapping = list(properties['sizes'].items())
-
-  shape_color_combos = None
-  if args.shape_color_combos_json is not None:
-    with open(args.shape_color_combos_json, 'r') as f:
-      shape_color_combos = list(json.load(f).items())
-
+  loaded_properties = load_properties(args.properties_json)
+  
   positions = []
   objects = []
   blender_objects = []
-  for i in range(num_objects):
-    # Choose a random size
-    size_name, r = random.choice(size_mapping)
+  
+  target_attributes = generate_random_attributes(loaded_properties)
+  x, y, theta = generate_position()
+  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
+  
+  for i in range(args.number_target_group_objects):
+    object_attributes = generate_related_attributes(target_attributes, args.target_group_relations, loaded_properties)
 
-    # Try to place the object, ensuring that we don't intersect any existing
-    # objects and that we are more than the desired margin away from all existing
-    # objects along all cardinal directions.
     num_tries = 0
     while True:
-      # If we try and fail to place an object too many times, then delete all
-      # the objects in the scene and start over.
       num_tries += 1
       if num_tries > args.max_retries:
         for obj in blender_objects:
           utils.delete_object(obj)
         return add_random_objects(scene_struct, num_objects, args, camera)
-      x = random.uniform(-3, 3)
-      y = random.uniform(-3, 3)
-      # Check to make sure the new object is further than min_dist from all
-      # other objects, and further than margin along the four cardinal directions
-      dists_good = True
-      margins_good = True
-      for (xx, yy, rr) in positions:
-        dx, dy = x - xx, y - yy
-        dist = math.sqrt(dx * dx + dy * dy)
-        if dist - r - rr < args.min_dist:
-          dists_good = False
-          break
-        for direction_name in ['left', 'right', 'front', 'behind']:
-          direction_vec = scene_struct['directions'][direction_name]
-          assert direction_vec[2] == 0
-          margin = dx * direction_vec[0] + dy * direction_vec[1]
-          if 0 < margin < args.margin:
-            print(margin, args.margin, direction_name)
-            print('BROKEN MARGIN!')
-            margins_good = False
-            break
-        if not margins_good:
-          break
+      
+      x, y, theta = generate_position()
+      succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
 
-      if dists_good and margins_good:
+      if succeded:
         break
 
-    # Choose random color and shape
-    if shape_color_combos is None:
-      obj_name, obj_name_out = random.choice(object_mapping)
-      color_name, rgba = random.choice(list(color_name_to_rgba.items()))
-    else:
-      obj_name_out, color_choices = random.choice(shape_color_combos)
-      color_name = random.choice(color_choices)
-      obj_name = [k for k, v in object_mapping if v == obj_name_out][0]
-      rgba = color_name_to_rgba[color_name]
+    place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
 
-    # For cube, adjust the size a bit
-    if obj_name == 'Cube':
-      r /= math.sqrt(2)
+  for i in range(args.number_non_target_group_objects):
+    object_attributes = generate_related_attributes(target_attributes, args.non_target_group_relations, loaded_properties)
 
-    # Choose random orientation for the object.
-    theta = 360.0 * random.random()
+    num_tries = 0
+    while True:
+      num_tries += 1
+      if num_tries > args.max_retries:
+        for obj in blender_objects:
+          utils.delete_object(obj)
+        return add_random_objects(scene_struct, num_objects, args, camera)
+      
+      x, y, theta = generate_position()
+      succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
 
-    # Actually add the object to the scene
-    utils.add_object(args.shape_dir, obj_name, r, (x, y), theta=theta)
-    obj = bpy.context.object
-    blender_objects.append(obj)
-    positions.append((x, y, r))
+      if succeded:
+        break
 
-    # Attach a random material
-    mat_name, mat_name_out = random.choice(material_mapping)
-    utils.add_material(mat_name, Color=rgba)
+    place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
 
-    # Record data about the object in the scene data structure
-    pixel_coords = utils.get_camera_coords(camera, obj.location)
-    objects.append({
-      'shape': obj_name_out,
-      'size': size_name,
-      'material': mat_name_out,
-      '3d_coords': tuple(obj.location),
-      'rotation': theta,
-      'pixel_coords': pixel_coords,
-      'color': color_name,
-    })
 
   # Check that all objects are at least partially visible in the rendered image
   all_visible = check_visibility(blender_objects, args.min_pixels_per_object)
@@ -443,6 +427,111 @@ def add_random_objects(scene_struct, num_objects, args, camera):
     return add_random_objects(scene_struct, num_objects, args, camera)
 
   return objects, blender_objects
+
+def generate_position():
+  x = random.uniform(-3, 3)
+  y = random.uniform(-3, 3)
+  
+  # Choose random orientation for the object.
+  theta = 360.0 * random.random()
+
+  return x, y, theta
+
+def check_distance_and_margin(positions, x, y, r, scene_struct):
+  # Check to make sure the new object is further than min_dist from all
+  # other objects, and further than margin along the four cardinal directions
+  dists_good = True
+  margins_good = True
+  for (xx, yy, rr) in positions:
+    dx, dy = x - xx, y - yy
+    dist = math.sqrt(dx * dx + dy * dy)
+    if dist - r - rr < args.min_dist:
+      dists_good = False
+      break
+    for direction_name in ['left', 'right', 'front', 'behind']:
+      direction_vec = scene_struct['directions'][direction_name]
+      assert direction_vec[2] == 0
+      margin = dx * direction_vec[0] + dy * direction_vec[1]
+      if 0 < margin < args.margin:
+        print(margin, args.margin, direction_name)
+        print('BROKEN MARGIN!')
+        margins_good = False
+        break
+    if not margins_good:
+      break
+
+  return dists_good and margins_good
+
+def generate_random_attributes(loaded_properties):
+  attributes = {}
+  # Choose a random size
+  attributes['size'] = random.choice(loaded_properties['size_mapping'])
+
+  # Choose random color and shape
+  if loaded_properties['shape_color_combos'] is None:
+    attributes['object'] = random.choice(loaded_properties['object_mapping'])
+    attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
+  else:
+    obj_name_out, color_choices = random.choice(loaded_properties['shape_color_combos'])
+    color_name = random.choice(color_choices)
+    obj_name = [k for k, v in loaded_properties['object_mapping'] if v == obj_name_out][0]
+    rgba = loaded_properties['color_name_to_rgba'][color_name]
+
+    attributes['object'] = obj_name, obj_name_out
+    attributes['color'] = color_name, rgba
+
+  attributes['material'] = random.choice(loaded_properties['material_mapping'])
+
+  return attributes
+
+def generate_related_attributes(base_attributes, relations: "list[Relation]", loaded_properties):
+  relation = random.choice(relations)
+  if relation == Relation.RANDOM:
+    return generate_random_attributes(loaded_properties)
+  
+  attributes = base_attributes.copy()
+  attributes_to_change = random.sample(['size', 'color', 'object'], relation.value)
+
+  for attribute in attributes_to_change:
+    if attribute == 'size':
+      attributes['size'] = random.choice(loaded_properties['size_mapping'])
+    elif attribute == 'object':
+      attributes['object'] = random.choice(loaded_properties['object_mapping'])
+    elif attribute == 'color':
+      attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
+  # TODO shape_color_combos
+  
+  return attributes
+
+
+def place_object(attributes, x, y, theta, positions, objects, blender_objects, camera):
+    # For cube, adjust the size a bit
+    r = attributes['size'][1]
+    if attributes['object'][0] == 'Cube':
+      r /= math.sqrt(2)
+
+    # Actually add the object to the scene
+    utils.add_object(args.shape_dir, attributes['object'][0], r, (x, y), theta=theta)
+    obj = bpy.context.object
+    blender_objects.append(obj)
+    positions.append((x, y, r))
+
+    # Attach a random material
+    utils.add_material(attributes['material'][0], Color=attributes['color'][1])
+
+    # Record data about the object in the scene data structure
+    pixel_coords = utils.get_camera_coords(camera, obj.location)
+    objects.append({
+      'shape': attributes['object'][1],
+      'size': attributes['size'][0],
+      'material': attributes['material'][1],
+      '3d_coords': tuple(obj.location),
+      'rotation': theta,
+      'pixel_coords': pixel_coords,
+      'color': attributes['color'][0],
+    })
+
+
 
 
 def compute_all_relationships(scene_struct, eps=0.2):
@@ -565,6 +654,8 @@ if __name__ == '__main__':
     # Run normally
     argv = utils.extract_args()
     args = parser.parse_args(argv)
+    args.target_group_relations = [Relation[arg] for arg in args.target_group_relations]
+    args.non_target_group_relations = [Relation[arg] for arg in args.non_target_group_relations]
     main(args)
   elif '--help' in sys.argv or '-h' in sys.argv:
     parser.print_help()
