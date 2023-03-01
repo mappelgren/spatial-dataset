@@ -72,10 +72,6 @@ parser.add_argument('--shape_color_combos_json', default=None,
          "for CLEVR-CoGenT.")
 
 # Settings for objects
-parser.add_argument('--min_objects', default=3, type=int,
-    help="The minimum number of objects to place in each scene")
-parser.add_argument('--max_objects', default=10, type=int,
-    help="The maximum number of objects to place in each scene")
 parser.add_argument('--min_dist', default=0.25, type=float,
     help="The minimum allowed distance between object centers")
 parser.add_argument('--margin', default=0.4, type=float,
@@ -89,10 +85,14 @@ parser.add_argument('--min_pixels_per_object', default=200, type=int,
 parser.add_argument('--max_retries', default=50, type=int,
     help="The number of times to try placing an object before giving up and " +
          "re-placing all objects in the scene.")
-parser.add_argument('--number_target_group_objects', default=3, type=int,
-    help="The number of objects in the target group.")
-parser.add_argument('--number_non_target_group_objects', default=6, type=int,
-    help="The number of objects that are not in the target group.")
+parser.add_argument('--min_number_target_group_objects', default=2, type=int,
+    help="The minimum number of objects in the target group.")
+parser.add_argument('--max_number_target_group_objects', default=3, type=int,
+    help="The maximum number of objects in the target group.")
+parser.add_argument('--min_number_non_target_group_objects', default=5, type=int,
+    help="The minimum number of objects that are not in the target group.")
+parser.add_argument('--max_number_non_target_group_objects', default=7, type=int,
+    help="The maximum number of objects that are not in the target group.")
 parser.add_argument('--target_group_relations', nargs='*', default=['FULL'],
     help="A list of possible relations between target objects and objects in the target group.")
 parser.add_argument('--non_target_group_relations', nargs='*', default=['RANDOM'],
@@ -193,9 +193,12 @@ def main(args):
     blend_path = None
     if args.save_blendfiles == 1:
       blend_path = blend_template % (i + args.start_idx)
-    num_objects = random.randint(args.min_objects, args.max_objects)
+    
+    num_target_group = random.randint(args.min_number_target_group_objects, args.max_number_target_group_objects)
+    num_non_target_group = random.randint(args.min_number_non_target_group_objects, args.max_number_non_target_group_objects)
     render_scene(args,
-      num_objects=num_objects,
+      num_target_group=num_target_group,
+      num_non_target_group=num_non_target_group,
       output_index=(i + args.start_idx),
       output_split=args.split,
       output_image=img_path,
@@ -224,7 +227,8 @@ def main(args):
 
 
 def render_scene(args,
-    num_objects=5,
+    num_target_group=2,
+    num_non_target_group=5,
     output_index=0,
     output_split='none',
     output_image='render.png',
@@ -274,6 +278,7 @@ def render_scene(args,
       'image_filename': os.path.basename(output_image),
       'objects': [],
       'directions': {},
+      'groups': {}
   }
 
   # Put a plane on the ground so we can compute cardinal directions
@@ -323,11 +328,14 @@ def render_scene(args,
       bpy.data.objects['Lamp_Fill'].location[i] += rand(args.fill_light_jitter)
 
   # Now make some random objects
-  objects, blender_objects = add_random_objects(scene_struct, num_objects, args, camera)
+  objects, blender_objects = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
   # Render the scene and dump the scene data structure
   scene_struct['objects'] = objects
   scene_struct['relationships'] = compute_all_relationships(scene_struct)
+  scene_struct['groups']['target'] = [0]
+  scene_struct['groups']['target_group'] = list(range(1, num_target_group))
+  scene_struct['groups']['non_target_group'] = list(range(num_target_group, num_target_group + 1 + num_non_target_group))
   while True:
     try:
       bpy.ops.render.render(write_still=True)
@@ -362,9 +370,9 @@ def load_properties(filename):
 
   return loaded_properties
 
-def add_random_objects(scene_struct, num_objects, args, camera):
+def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera):
   """
-  Add random objects to the current blender scene
+  Add target objects, target group objects and non-target group objects to the current blender scene
   """
 
   loaded_properties = load_properties(args.properties_json)
@@ -377,7 +385,7 @@ def add_random_objects(scene_struct, num_objects, args, camera):
   x, y, theta = generate_position()
   place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
   
-  for i in range(args.number_target_group_objects):
+  for i in range(num_target_group):
     object_attributes = generate_related_attributes(target_attributes, args.target_group_relations, loaded_properties)
 
     num_tries = 0
@@ -386,7 +394,7 @@ def add_random_objects(scene_struct, num_objects, args, camera):
       if num_tries > args.max_retries:
         for obj in blender_objects:
           utils.delete_object(obj)
-        return add_random_objects(scene_struct, num_objects, args, camera)
+        return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
       
       x, y, theta = generate_position()
       succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
@@ -396,7 +404,7 @@ def add_random_objects(scene_struct, num_objects, args, camera):
 
     place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
 
-  for i in range(args.number_non_target_group_objects):
+  for i in range(num_non_target_group):
     object_attributes = generate_related_attributes(target_attributes, args.non_target_group_relations, loaded_properties)
 
     num_tries = 0
@@ -405,7 +413,7 @@ def add_random_objects(scene_struct, num_objects, args, camera):
       if num_tries > args.max_retries:
         for obj in blender_objects:
           utils.delete_object(obj)
-        return add_random_objects(scene_struct, num_objects, args, camera)
+        return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
       
       x, y, theta = generate_position()
       succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
@@ -424,7 +432,7 @@ def add_random_objects(scene_struct, num_objects, args, camera):
     print('Some objects are occluded; replacing objects')
     for obj in blender_objects:
       utils.delete_object(obj)
-    return add_random_objects(scene_struct, num_objects, args, camera)
+    return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
   return objects, blender_objects
 
@@ -494,11 +502,14 @@ def generate_related_attributes(base_attributes, relations: "list[Relation]", lo
 
   for attribute in attributes_to_change:
     if attribute == 'size':
-      attributes['size'] = random.choice(loaded_properties['size_mapping'])
+      while attributes['size'] == base_attributes['size']:
+        attributes['size'] = random.choice(loaded_properties['size_mapping'])
     elif attribute == 'object':
-      attributes['object'] = random.choice(loaded_properties['object_mapping'])
+      while attributes['object'] == base_attributes['object']:
+        attributes['object'] = random.choice(loaded_properties['object_mapping'])
     elif attribute == 'color':
-      attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
+      while attributes['color'] == base_attributes['color']:
+        attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
   # TODO shape_color_combos
   
   return attributes
@@ -530,9 +541,6 @@ def place_object(attributes, x, y, theta, positions, objects, blender_objects, c
       'pixel_coords': pixel_coords,
       'color': attributes['color'][0],
     })
-
-
-
 
 def compute_all_relationships(scene_struct, eps=0.2):
   """
