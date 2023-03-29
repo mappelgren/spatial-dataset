@@ -505,13 +505,13 @@ def generate_random_attributes(loaded_properties):
 
   return attributes
 
-def generate_related_attributes(base_attributes, attributes: "list[str]", relations: "list[Relation]", loaded_properties):
+def generate_related_attributes(base_attributes, attributes_to_change: "list[str]", relations: "list[Relation]", loaded_properties):
   relation = random.choice(relations)
   if relation == Relation.RANDOM:
     return generate_random_attributes(loaded_properties)
   
   attributes = base_attributes.copy()
-  attributes_to_change = random.sample(attributes, min(len(attributes), relation.value))
+  attributes_to_change = random.sample(attributes_to_change, min(len(attributes_to_change), relation.value))
 
   for attribute in attributes_to_change:
     if attribute == 'size':
