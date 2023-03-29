@@ -97,6 +97,10 @@ parser.add_argument('--target_group_relations', nargs='*', default=['FULL'],
     help="A list of possible relations between target objects and objects in the target group.")
 parser.add_argument('--non_target_group_relations', nargs='*', default=['RANDOM'],
     help="A list of possible relations between target objects and objects not in the target group.")
+parser.add_argument('--target_group_attributes', nargs='*', default=['color', 'shape', 'object'],
+    help="A list of attributes that can be changed for the tharget group. (The number of attributes that are changed is controlled by --target_group_relations)")
+parser.add_argument('--non_target_group_attributes', nargs='*', default=['color', 'shape', 'object'],
+    help="A list of attributes that can be changed for the non tharget group. (The number of attributes that are changed is controlled by --non_target_group_relations)")
 
 # Output settings
 parser.add_argument('--start_idx', default=0, type=int,
@@ -381,12 +385,17 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   objects = []
   blender_objects = []
   
+  # target object
   target_attributes = generate_random_attributes(loaded_properties)
   x, y, theta = generate_position()
   place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
   
+  # target group
   for i in range(num_target_group):
-    object_attributes = generate_related_attributes(target_attributes, args.target_group_relations, loaded_properties)
+    object_attributes = generate_related_attributes(target_attributes,
+                                                    args.target_group_attributes,
+                                                    args.target_group_relations,
+                                                    loaded_properties)
 
     num_tries = 0
     while True:
@@ -404,8 +413,12 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
 
     place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
 
+  # non-target group
   for i in range(num_non_target_group):
-    object_attributes = generate_related_attributes(target_attributes, args.non_target_group_relations, loaded_properties)
+    object_attributes = generate_related_attributes(target_attributes,
+                                                    args.non_target_group_attributes,
+                                                    args.non_target_group_relations,
+                                                    loaded_properties)
 
     num_tries = 0
     while True:
@@ -492,13 +505,13 @@ def generate_random_attributes(loaded_properties):
 
   return attributes
 
-def generate_related_attributes(base_attributes, relations: "list[Relation]", loaded_properties):
+def generate_related_attributes(base_attributes, attributes: "list[str]", relations: "list[Relation]", loaded_properties):
   relation = random.choice(relations)
   if relation == Relation.RANDOM:
     return generate_random_attributes(loaded_properties)
   
   attributes = base_attributes.copy()
-  attributes_to_change = random.sample(['size', 'color', 'object'], relation.value)
+  attributes_to_change = random.sample(attributes, min(len(attributes), relation.value))
 
   for attribute in attributes_to_change:
     if attribute == 'size':
