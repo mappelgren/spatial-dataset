@@ -97,9 +97,9 @@ parser.add_argument('--target_group_relations', nargs='*', default=['FULL'],
     help="A list of possible relations between target objects and objects in the target group.")
 parser.add_argument('--non_target_group_relations', nargs='*', default=['RANDOM'],
     help="A list of possible relations between target objects and objects not in the target group.")
-parser.add_argument('--target_group_attributes', nargs='*', default=['color', 'shape', 'object'],
+parser.add_argument('--target_group_attributes', nargs='*', default=['color', 'shape', 'size'],
     help="A list of attributes that can be changed for the tharget group. (The number of attributes that are changed is controlled by --target_group_relations)")
-parser.add_argument('--non_target_group_attributes', nargs='*', default=['color', 'shape', 'object'],
+parser.add_argument('--non_target_group_attributes', nargs='*', default=['color', 'shape', 'size'],
     help="A list of attributes that can be changed for the non tharget group. (The number of attributes that are changed is controlled by --non_target_group_relations)")
 
 # Output settings
@@ -200,8 +200,7 @@ def main(args):
     
     num_target_group = random.randint(args.min_number_target_group_objects, args.max_number_target_group_objects)
     num_non_target_group = random.randint(args.min_number_non_target_group_objects, args.max_number_non_target_group_objects)
-    print(num_target_group)
-    print(num_non_target_group)
+
     render_scene(args,
       num_target_group=num_target_group,
       num_non_target_group=num_non_target_group,
@@ -380,7 +379,7 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   """
 
   loaded_properties = load_properties(args.properties_json)
-  
+
   positions = []
   objects = []
   blender_objects = []
@@ -521,6 +520,7 @@ def generate_random_attributes(loaded_properties):
 
 def generate_related_attributes(base_attributes, attributes_to_change: "list[str]", relations: "list[Relation]", loaded_properties):
   relation = random.choice(relations)
+
   if relation == Relation.RANDOM:
     return generate_random_attributes(loaded_properties)
   
@@ -531,7 +531,7 @@ def generate_related_attributes(base_attributes, attributes_to_change: "list[str
     if attribute == 'size':
       while attributes['size'] == base_attributes['size']:
         attributes['size'] = random.choice(loaded_properties['size_mapping'])
-    elif attribute == 'object':
+    elif attribute == 'shape':
       while attributes['object'] == base_attributes['object']:
         attributes['object'] = random.choice(loaded_properties['object_mapping'])
     elif attribute == 'color':
