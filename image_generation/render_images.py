@@ -200,6 +200,8 @@ def main(args):
     
     num_target_group = random.randint(args.min_number_target_group_objects, args.max_number_target_group_objects)
     num_non_target_group = random.randint(args.min_number_non_target_group_objects, args.max_number_non_target_group_objects)
+    print(num_target_group)
+    print(num_non_target_group)
     render_scene(args,
       num_target_group=num_target_group,
       num_non_target_group=num_non_target_group,
@@ -332,14 +334,12 @@ def render_scene(args,
       bpy.data.objects['Lamp_Fill'].location[i] += rand(args.fill_light_jitter)
 
   # Now make some random objects
-  objects, blender_objects = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+  objects, blender_objects, object_indices = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
   # Render the scene and dump the scene data structure
   scene_struct['objects'] = objects
   scene_struct['relationships'] = compute_all_relationships(scene_struct)
-  scene_struct['groups']['target'] = [0]
-  scene_struct['groups']['target_group'] = list(range(1, num_target_group))
-  scene_struct['groups']['non_target_group'] = list(range(num_target_group, num_target_group + 1 + num_non_target_group))
+  scene_struct['groups'] = object_indices
   while True:
     try:
       bpy.ops.render.render(write_still=True)
@@ -384,14 +384,25 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   positions = []
   objects = []
   blender_objects = []
+  group_indices = {
+    'target': [],
+    'target_group': [],
+    'non_target_group': []
+  }
   
   # target object
   target_attributes = generate_random_attributes(loaded_properties)
   x, y, theta = generate_position()
   place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
   
+  # keeps track, which object is added
+  object_index = 0
+  group_indices['target'].append(object_index)
+
+  
   # target group
-  for i in range(num_target_group):
+  for i in range(1, num_target_group + 1):
+    object_index += i
     object_attributes = generate_related_attributes(target_attributes,
                                                     args.target_group_attributes,
                                                     args.target_group_relations,
@@ -410,11 +421,13 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
 
       if succeded:
         break
-
+    
     place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
+    group_indices['target_group'].append(object_index)
 
   # non-target group
-  for i in range(num_non_target_group):
+  for i in range(1, num_non_target_group + 1):
+    object_index += i
     object_attributes = generate_related_attributes(target_attributes,
                                                     args.non_target_group_attributes,
                                                     args.non_target_group_relations,
@@ -435,6 +448,7 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
         break
 
     place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
+    group_indices['non_target_group'].append(object_index)
 
 
   # Check that all objects are at least partially visible in the rendered image
@@ -447,7 +461,7 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
       utils.delete_object(obj)
     return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
-  return objects, blender_objects
+  return objects, blender_objects, group_indices
 
 def generate_position():
   x = random.uniform(-3, 3)
