@@ -1,4 +1,4 @@
- # Copyright 2017-present, Facebook, Inc.
+# Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -7,12 +7,17 @@
 
 from __future__ import print_function
 
-import copy
-from enum import Enum
-import math, sys, random, argparse, json, os, tempfile
+import math, sys, random, argparse, json, os
 from datetime import datetime as dt
-from collections import Counter
 import numpy as np
+
+from object_definition import generate_object
+from positioning import rotateMatrix
+from object_definition import generate_random_attributes, load_properties, Relation
+from positioning import generate_position
+from positioning_util import compute_all_relationships, place_object
+from render_utils import check_visibility
+
 # import matplotlib.pyplot as plt
 
 """
@@ -26,13 +31,6 @@ This file expects to be run from Blender like this:
 
 blender --background --python render_images.py -- [arguments to this script]
 """
-
-class Relation(Enum):
-  FULL=0
-  HIGH=1
-  LOW=2
-  NO=3
-  RANDOM=4
 
 INSIDE_BLENDER = True
 try:
@@ -244,33 +242,8 @@ def main(args):
   with open(args.output_scene_file, 'w') as f:
     json.dump(output, f)
 
-def rotateMatrix(a):
-   return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
 
-def generate_point(direction_vector, origin):
-  x, y = direction_vector[:2]
-  angle = np.arctan2(y, x)
-  print(angle)
-  rot = rotateMatrix(angle)
-  p = [-6, -6]
-  while not in_bounds(p):
-    x = random.uniform(-6, 6)
-    y = random.uniform(0, 6)
-    p = [x, y]
-    p = p @ rot + [origin[0], origin[1]]
-  return p
-
-def render_scene(args,
-    num_target_group=2,
-    num_non_target_group=5,
-    output_index=0,
-    output_split='none',
-    output_image='render.png',
-    output_scene='render_json',
-    output_blendfile=None,
-    output_rot_images=['render_rot.png']
-  ):
-
+def load_everything(args, output_image):
   # Load the main blendfile
   bpy.ops.wm.open_mainfile(filepath=args.base_scene_blendfile)
 
@@ -306,42 +279,26 @@ def render_scene(args,
   if args.use_gpu == 1:
     bpy.context.scene.cycles.device = 'GPU'
 
-  # This will give ground-truth information about the scene and its objects
-  scene_struct = {
-      'split': output_split,
-      'image_index': output_index,
-      'image_filename': os.path.basename(output_image),
-      'objects': [],
-      'directions': {},
-      'groups': {}
-  }
+  return render_args
 
+def rand(L):
+    return 2.0 * L * (random.random() - 0.5)
+
+def set_up_camera(args, scene_struct):
   # Put a plane on the ground so we can compute cardinal directions
   bpy.ops.mesh.primitive_plane_add(radius=5)
   plane = bpy.context.object
 
-  def rand(L):
-    return 2.0 * L * (random.random() - 0.5)
 
 
   # Add random jitter to camera position
-  # if args.camera_jitter > 0:
-  #   for i in range(3):
-  #     bpy.data.objects['Camera'].location[i] += rand(args.camera_jitter)
-
-
+  if args.camera_jitter > 0:
+    for i in range(3):
+      bpy.data.objects['Camera'].location[i] += rand(args.camera_jitter)
 
   # Figure out the left, up, and behind directions along the plane and record
   # them in the scene structure
   camera = bpy.data.objects['Camera']
-
-  print(camera)
-  print(camera.matrix_world)
-  print(camera.matrix_world.to_quaternion())
-  print(camera.location)
-  print(camera.rotation_euler)
-
-
 
   plane_normal = plane.data.vertices[0].normal
   cam_behind = camera.matrix_world.to_quaternion() * Vector((0, 0, -1))
@@ -363,6 +320,9 @@ def render_scene(args,
   scene_struct['directions']['above'] = tuple(plane_up)
   scene_struct['directions']['below'] = tuple(-plane_up)
 
+  return camera
+
+def set_up_lights(args):
   # Add random jitter to lamp positions
   if args.key_light_jitter > 0:
     for i in range(3):
@@ -374,16 +334,10 @@ def render_scene(args,
     for i in range(3):
       bpy.data.objects['Lamp_Fill'].location[i] += rand(args.fill_light_jitter)
 
-
-
-
-  # Now make some random objects
-  objects, blender_objects, object_indices = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+def render(filename, render_args):
+  render_args.filepath = filename
 
   # Render the scene and dump the scene data structure
-  scene_struct['objects'] = objects
-  scene_struct['relationships'] = compute_all_relationships(scene_struct)
-  scene_struct['groups'] = object_indices
   while True:
     try:
       bpy.ops.render.render(write_still=True)
@@ -391,104 +345,97 @@ def render_scene(args,
     except Exception as e:
       print(e)
 
+def save_scene_struct(output_scene, scene_struct):
   with open(output_scene, 'w') as f:
+    for obj in scene_struct['objects']:
+      obj['3d_coords'] = tuple(obj['3d_coords'])
     json.dump(scene_struct, f, indent=2)
 
-  originalx, originaly = camera.location.x, camera.location.y
+def rotate_camera(camera, originalx, originaly, degree, scene_struct):
+  xy = np.array([originalx, originaly]) @ rotateMatrix(np.radians(degree))
+  x, y = xy
+  camera.location.x = x
+  camera.location.y = y
+
+  for obj in scene_struct['objects']:
+    pixel_coords = utils.get_camera_coords(camera, obj['3d_coords'])
+    obj['pixel_coords'][degree] = pixel_coords
+
+  if degree == 90:
+    ground = bpy.data.objects['Ground']
+
+    ground.location.x = -15
+    ground.location.y = 25
+
+    ground.rotation_euler[2] = math.radians(64)
+
+  elif degree == 180:
+    ground = bpy.data.objects['Ground']
+
+    ground.location.x = 24
+    ground.location.y = 22
+
+    ground.rotation_euler[2] = math.radians(334)
+
+  elif degree == 270:
+    ground = bpy.data.objects['Ground']
+
+    ground.location.x = 15
+    ground.location.y = -24
+
+    ground.rotation_euler[2] = math.radians(244)
+
+def render_scene(args,
+    num_target_group=2,
+    num_non_target_group=5,
+    output_index=0,
+    output_split='none',
+    output_image='render.png',
+    output_scene='render_json',
+    output_blendfile=None,
+    output_rot_images=['render_rot.png']
+  ):
+
+  # This will give ground-truth information about the scene and its objects
+  scene_struct = {
+    'split': output_split,
+    'image_index': output_index,
+    'image_filename': os.path.basename(output_image),
+    'objects': [],
+    'directions': {},
+    'groups': {}
+  }
+
+  #Set up renderer and camera
+  render_args = load_everything(args, output_image)
+  camera = set_up_camera(args, scene_struct)
+  set_up_lights(args)
+
+  # Now make some random objects
+  add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+
+  render(output_image, render_args)
+
+  original_x, original_y = camera.location.x, camera.location.y
+
   for degree, file_name in zip([90, 180, 270], output_rot_images):
 
-    xy = np.array([originalx, originaly]) @ rotateMatrix(np.radians(degree))
-    x, y = xy
-    camera.location.x = x
-    camera.location.y = y
+    rotate_camera(camera, original_x, original_y, degree, scene_struct)
 
+    render(file_name, render_args)
 
-    render_args.filepath = file_name
+  save_scene_struct(output_scene, scene_struct)
 
-    if degree == 90:
-      ground = bpy.data.objects['Ground']
+  # if output_blendfile is not None:
+  #   bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
 
-      ground.location.x = -15
-      ground.location.y = 25
-
-      ground.rotation_euler[2] = math.radians(64)
-
-    elif degree == 180:
-      ground = bpy.data.objects['Ground']
-
-      ground.location.x = 24
-      ground.location.y = 22
-
-      ground.rotation_euler[2] = math.radians(334)
-
-    elif degree == 270:
-      ground = bpy.data.objects['Ground']
-
-      ground.location.x = 15
-      ground.location.y = -24
-
-      ground.rotation_euler[2] = math.radians(244)
-
-
-
-    while True:
-      try:
-        bpy.ops.render.render(write_still=True)
-        break
-      except Exception as e:
-        print(e)
-
-  if output_blendfile is not None:
-    bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
-
-
-def load_properties(filename):
-  # Load the property file
-  loaded_properties = {}
-  with open(filename, 'r') as f:
-    properties = json.load(f)
-    loaded_properties['color_name_to_rgba'] = {}
-    for name, rgb in properties['colors'].items():
-      rgba = [float(c) / 255.0 for c in rgb] + [1.0]
-      loaded_properties['color_name_to_rgba'][name] = rgba
-    loaded_properties['material_mapping'] = [(v, k) for k, v in properties['materials'].items()]
-    loaded_properties['object_mapping'] = [(v, k) for k, v in properties['shapes'].items()]
-    loaded_properties['size_mapping'] = list(properties['sizes'].items())
-
-  loaded_properties['shape_color_combos'] = None
-  if args.shape_color_combos_json is not None:
-    with open(args.shape_color_combos_json, 'r') as f:
-      loaded_properties['shape_color_combos'] = list(json.load(f).items())
-
-  return loaded_properties
-
-
-def generate_object(loaded_properties, scene_struct, positions,
-                    fixed_object=None, fix_target=False, direction='left'):
-
-  attributes = generate_random_attributes(loaded_properties, fix_target=fix_target)
-  if fixed_object is not None:
-    x, y, theta = generate_position_controlled(scene_struct, fixed_object, direction=direction)
-  else:
-    x, y, theta = generate_position()
-  succeeded = check_distance_and_margin(positions, x, y, attributes['size'][1], scene_struct)
-  while not succeeded:
-    if fixed_object is not None:
-      x, y, theta = generate_position_controlled(scene_struct, fixed_object, direction=direction)
-    else:
-      x, y, theta = generate_position()
-    succeeded = check_distance_and_margin(positions, x, y, attributes['size'][1], scene_struct)
-
-
-
-  return attributes, x, y, theta
 
 def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera):
   """
   Add target objects, target group objects and non-target group objects to the current blender scene
   """
 
-  loaded_properties = load_properties(args.properties_json)
+  loaded_properties = load_properties(args.properties_json, args)
 
   positions = []
   objects = []
@@ -501,28 +448,19 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
 
   distractor = generate_random_attributes(loaded_properties)
   x, y, theta = generate_position()
-  place_object(distractor, x, y, theta, positions, objects, blender_objects, camera)
+  place_object(distractor, x, y, theta, positions, objects, blender_objects, camera, args)
 
-  p1 = [x, y]
 
   distractor = objects[0]
 
   target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
-                                                   fix_target=True, fixed_object=distractor, direction='left')
-  p2 = [x, y]
-  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
+                                                   fix_target=True, fixed_object=distractor, direction='left', args=args)
+  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera, args)
 
   target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
-                                                   fix_target=True, fixed_object=distractor, direction='right')
-  p3 = [x, y]
-  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
+                                                   fix_target=True, fixed_object=distractor, direction='right', args=args)
+  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera, args)
 
-  # plot(p1, p2, p3, scene_struct['directions']['left'], scene_struct['directions']['right'])
-
-  print('points')
-  print(p1)
-  print(p2)
-  print(p3)
 
 
   #
@@ -601,320 +539,11 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
       utils.delete_object(obj)
     return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
-  return objects, blender_objects, group_indices
+  scene_struct['objects'] = objects
+  scene_struct['relationships'] = compute_all_relationships(scene_struct)
+  scene_struct['groups'] = group_indices
 
-def get_coords(vector, origin, length, negative=True):
-  if negative:
-    x = np.linspace(-length, length)
-  else:
-    x = np.linspace(0, length)
-  xs = [x0 * vector[0] + origin[0] for x0 in x]
-  ys = [y0 * vector[1] + origin[1] for y0 in x]
-  return xs, ys
-
-
-def generate_position():
-  #TODO This seems like the place to decide where the object is placed
-  x = random.uniform(-3, 3)
-  y = random.uniform(-3, 3)
-  # Choose random orientation for the object.
-  theta = 360.0 * random.random()
-
-  return x, y, theta
-
-
-def in_bounds(point):
-  x, y = point
-
-  return -3 <= x <= 3 and -3 <= y <= 3
-
-
-def line_from_coord(dir_vector, origin):
-  x1, y1, _ = origin
-  dx, dy, _ = dir_vector
-  x2, y2 = x1 + dx, y1 + dy
-  p1 = (x1, y1)
-  p2 = (x2, y2)
-
-  A = (p1[1] - p2[1])
-  B = (p2[0] - p1[0])
-  C = (p1[0] * p2[1] - p2[0] * p1[1])
-
-  return A, B, -C
-
-def get_coords(vector, origin, length):
-  x = np.linspace(-length, length)
-  xs = [x0 * vector[0] + origin[0] for x0 in x]
-  ys = [y0 * vector[1] + origin[1] for y0 in x]
-  return xs, ys
-
-
-def is_left(a, b, c):
-  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0;
-
-def is_right(a, b, c):
-  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0;
-
-
-def is_valid(int1, int2, point, direction='left'):
-  if direction == 'left':
-    return is_left(int1, int2, point) and in_bounds(point)
-  elif direction == 'right':
-    return is_right(int1, int2, point) and in_bounds(point)
-  else:
-    raise NotImplementedError()
-
-def intersection(L1, L2):
-  D = L1[0] * L2[1] - L1[1] * L2[0]
-  Dx = L1[2] * L2[1] - L1[1] * L2[2]
-  Dy = L1[0] * L2[2] - L1[2] * L2[0]
-  if D != 0:
-    x = Dx / D
-    y = Dy / D
-    return x, y
-  else:
-    return False
-
-up_absolute = (0, 1, 0)
-right_absolute = (1, 0, 0)
-boundary_lines = [line_from_coord(up_absolute, (-3, 0, 0)),
-                  line_from_coord(up_absolute, (3, 0, 0)),
-                  line_from_coord(right_absolute, (0, -3, 0)),
-                  line_from_coord(right_absolute, (0, 3, 0))]
-
-def generate_position_controlled(scene_struct, fixed_obj, direction='left'):
-  dir_vector = scene_struct['directions'][direction]
-  coord = fixed_obj['3d_coords']
-
-  x, y = generate_point(dir_vector, coord)
-
-  # Choose random orientation for the object.
-  theta = 360.0 * random.random()
-  print(direction, dir_vector)
-  print("coord", x, y, theta)
-
-
-  return x, y, theta
-
-def check_distance_and_margin(positions, x, y, r, scene_struct):
-  # Check to make sure the new object is further than min_dist from all
-  # other objects, and further than margin along the four cardinal directions
-  dists_good = True
-  margins_good = True
-  for (xx, yy, rr) in positions:
-    dx, dy = x - xx, y - yy
-    dist = math.sqrt(dx * dx + dy * dy)
-    if dist - r - rr < args.min_dist:
-      dists_good = False
-      break
-    for direction_name in ['left', 'right', 'front', 'behind']:
-      direction_vec = scene_struct['directions'][direction_name]
-      assert direction_vec[2] == 0
-      margin = dx * direction_vec[0] + dy * direction_vec[1]
-      if 0 < margin < args.margin:
-        print(margin, args.margin, direction_name)
-        print('BROKEN MARGIN!')
-        margins_good = False
-        break
-    if not margins_good:
-      break
-
-  return dists_good and margins_good
-
-def generate_random_attributes(loaded_properties, fix_target=False):
-  attributes = {}
-  # Choose a random size
-  attributes['size'] = random.choice(loaded_properties['size_mapping'])
-
-  if fix_target:
-    attributes['size'] = loaded_properties['size_mapping'][0]
-    attributes['color'] = 'red', loaded_properties['color_name_to_rgba']['red']
-    attributes['material'] = loaded_properties['material_mapping'][0]
-    attributes['object'] = loaded_properties['object_mapping'][0]
-
-    return attributes
-
-  # Choose random color and shape
-  if loaded_properties['shape_color_combos'] is None:
-    attributes['object'] = random.choice(loaded_properties['object_mapping'])
-    attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
-  else:
-    obj_name_out, color_choices = random.choice(loaded_properties['shape_color_combos'])
-    color_name = random.choice(color_choices)
-    obj_name = [k for k, v in loaded_properties['object_mapping'] if v == obj_name_out][0]
-    rgba = loaded_properties['color_name_to_rgba'][color_name]
-
-    attributes['object'] = obj_name, obj_name_out
-    attributes['color'] = color_name, rgba
-
-  attributes['material'] = random.choice(loaded_properties['material_mapping'])
-
-  return attributes
-
-def generate_related_attributes(base_attributes, attributes_to_change: "list[str]", relations: "list[Relation]", loaded_properties):
-  relation = random.choice(relations)
-
-  if relation == Relation.RANDOM:
-    return generate_random_attributes(loaded_properties)
-  
-  attributes = base_attributes.copy()
-  attributes_to_change = random.sample(attributes_to_change, min(len(attributes_to_change), relation.value))
-
-  for attribute in attributes_to_change:
-    if attribute == 'size':
-      while attributes['size'] == base_attributes['size']:
-        attributes['size'] = random.choice(loaded_properties['size_mapping'])
-    elif attribute == 'shape':
-      while attributes['object'] == base_attributes['object']:
-        attributes['object'] = random.choice(loaded_properties['object_mapping'])
-    elif attribute == 'color':
-      while attributes['color'] == base_attributes['color']:
-        attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
-  # TODO shape_color_combos
-  
-  return attributes
-
-
-def place_object(attributes, x, y, theta, positions, objects, blender_objects, camera):
-    # For cube, adjust the size a bit
-    r = attributes['size'][1]
-    if attributes['object'][0] == 'Cube':
-      r /= math.sqrt(2)
-
-    # Actually add the object to the scene
-    utils.add_object(args.shape_dir, attributes['object'][0], r, (x, y), theta=theta)
-    obj = bpy.context.object
-    blender_objects.append(obj)
-    positions.append((x, y, r))
-
-    # Attach a random material
-    utils.add_material(attributes['material'][0], Color=attributes['color'][1])
-
-    # Record data about the object in the scene data structure
-    pixel_coords = utils.get_camera_coords(camera, obj.location)
-    objects.append({
-      'shape': attributes['object'][1],
-      'size': attributes['size'][0],
-      'material': attributes['material'][1],
-      '3d_coords': tuple(obj.location),
-      'rotation': theta,
-      'pixel_coords': pixel_coords,
-      'color': attributes['color'][0],
-    })
-
-def compute_all_relationships(scene_struct, eps=0.2):
-  """
-  Computes relationships between all pairs of objects in the scene.
-  
-  Returns a dictionary mapping string relationship names to lists of lists of
-  integers, where output[rel][i] gives a list of object indices that have the
-  relationship rel with object i. For example if j is in output['left'][i] then
-  object j is left of object i.
-  """
-  all_relationships = {}
-  for name, direction_vec in scene_struct['directions'].items():
-    if name == 'above' or name == 'below': continue
-    all_relationships[name] = []
-    for i, obj1 in enumerate(scene_struct['objects']):
-      coords1 = obj1['3d_coords']
-      related = set()
-      for j, obj2 in enumerate(scene_struct['objects']):
-        if obj1 == obj2: continue
-        coords2 = obj2['3d_coords']
-        diff = [coords2[k] - coords1[k] for k in [0, 1, 2]]
-        dot = sum(diff[k] * direction_vec[k] for k in [0, 1, 2])
-        if dot > eps:
-          related.add(j)
-      all_relationships[name].append(sorted(list(related)))
-  return all_relationships
-
-
-def check_visibility(blender_objects, min_pixels_per_object):
-  """
-  Check whether all objects in the scene have some minimum number of visible
-  pixels; to accomplish this we assign random (but distinct) colors to all
-  objects, and render using no lighting or shading or antialiasing; this
-  ensures that each object is just a solid uniform color. We can then count
-  the number of pixels of each color in the output image to check the visibility
-  of each object.
-
-  Returns True if all objects are visible and False otherwise.
-  """
-  f, path = tempfile.mkstemp(suffix='.png')
-  object_colors = render_shadeless(blender_objects, path=path)
-  img = bpy.data.images.load(path)
-  p = list(img.pixels)
-  color_count = Counter((p[i], p[i+1], p[i+2], p[i+3])
-                        for i in range(0, len(p), 4))
-  os.remove(path)
-  if len(color_count) != len(blender_objects) + 1:
-    return False
-  for _, count in color_count.most_common():
-    if count < min_pixels_per_object:
-      return False
-  return True
-
-
-def render_shadeless(blender_objects, path='flat.png'):
-  """
-  Render a version of the scene with shading disabled and unique materials
-  assigned to all objects, and return a set of all colors that should be in the
-  rendered image. The image itself is written to path. This is used to ensure
-  that all objects will be visible in the final rendered scene.
-  """
-  render_args = bpy.context.scene.render
-
-  # Cache the render args we are about to clobber
-  old_filepath = render_args.filepath
-  old_engine = render_args.engine
-  old_use_antialiasing = render_args.use_antialiasing
-
-  # Override some render settings to have flat shading
-  render_args.filepath = path
-  render_args.engine = 'BLENDER_RENDER'
-  render_args.use_antialiasing = False
-
-  # Move the lights and ground to layer 2 so they don't render
-  utils.set_layer(bpy.data.objects['Lamp_Key'], 2)
-  utils.set_layer(bpy.data.objects['Lamp_Fill'], 2)
-  utils.set_layer(bpy.data.objects['Lamp_Back'], 2)
-  utils.set_layer(bpy.data.objects['Ground'], 2)
-
-  # Add random shadeless materials to all objects
-  object_colors = set()
-  old_materials = []
-  for i, obj in enumerate(blender_objects):
-    old_materials.append(obj.data.materials[0])
-    bpy.ops.material.new()
-    mat = bpy.data.materials['Material']
-    mat.name = 'Material_%d' % i
-    while True:
-      r, g, b = [random.random() for _ in range(3)]
-      if (r, g, b) not in object_colors: break
-    object_colors.add((r, g, b))
-    mat.diffuse_color = [r, g, b]
-    mat.use_shadeless = True
-    obj.data.materials[0] = mat
-
-  # Render the scene
-  bpy.ops.render.render(write_still=True)
-
-  # Undo the above; first restore the materials to objects
-  for mat, obj in zip(old_materials, blender_objects):
-    obj.data.materials[0] = mat
-
-  # Move the lights and ground back to layer 0
-  utils.set_layer(bpy.data.objects['Lamp_Key'], 0)
-  utils.set_layer(bpy.data.objects['Lamp_Fill'], 0)
-  utils.set_layer(bpy.data.objects['Lamp_Back'], 0)
-  utils.set_layer(bpy.data.objects['Ground'], 0)
-
-  # Set the render settings back to what they were
-  render_args.filepath = old_filepath
-  render_args.engine = old_engine
-  render_args.use_antialiasing = old_use_antialiasing
-
-  return object_colors
+  # return objects, blender_objects, group_indices
 
 
 if __name__ == '__main__':
