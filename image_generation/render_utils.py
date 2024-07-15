@@ -94,3 +94,15 @@ def check_visibility(blender_objects, min_pixels_per_object):
     if count < min_pixels_per_object:
       return False
   return True
+
+
+def render(filename, render_args):
+  render_args.filepath = filename
+
+  # Render the scene and dump the scene data structure
+  while True:
+    try:
+      bpy.ops.render.render(write_still=True)
+      break
+    except Exception as e:
+      print(e)
