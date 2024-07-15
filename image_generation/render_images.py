@@ -1,4 +1,4 @@
-# Copyright 2017-present, Facebook, Inc.
+ # Copyright 2017-present, Facebook, Inc.
 # All rights reserved.
 #
 # This source code is licensed under the BSD-style license found in the
@@ -6,10 +6,14 @@
 # of patent rights can be found in the PATENTS file in the same directory.
 
 from __future__ import print_function
+
+import copy
 from enum import Enum
 import math, sys, random, argparse, json, os, tempfile
 from datetime import datetime as dt
 from collections import Counter
+import numpy as np
+# import matplotlib.pyplot as plt
 
 """
 Renders random scenes using Blender, each with with a random number of objects;
@@ -85,13 +89,13 @@ parser.add_argument('--min_pixels_per_object', default=200, type=int,
 parser.add_argument('--max_retries', default=50, type=int,
     help="The number of times to try placing an object before giving up and " +
          "re-placing all objects in the scene.")
-parser.add_argument('--min_number_target_group_objects', default=2, type=int,
+parser.add_argument('--min_number_target_group_objects', default=1, type=int,
     help="The minimum number of objects in the target group.")
-parser.add_argument('--max_number_target_group_objects', default=3, type=int,
+parser.add_argument('--max_number_target_group_objects', default=1, type=int,
     help="The maximum number of objects in the target group.")
-parser.add_argument('--min_number_non_target_group_objects', default=5, type=int,
+parser.add_argument('--min_number_non_target_group_objects', default=0, type=int,
     help="The minimum number of objects that are not in the target group.")
-parser.add_argument('--max_number_non_target_group_objects', default=7, type=int,
+parser.add_argument('--max_number_non_target_group_objects', default=0, type=int,
     help="The maximum number of objects that are not in the target group.")
 parser.add_argument('--target_group_relations', nargs='*', default=['FULL'],
     help="A list of possible relations between target objects and objects in the target group.")
@@ -176,9 +180,16 @@ def main(args):
   num_digits = 6
   prefix = '%s_%s_' % (args.filename_prefix, args.split)
   img_template = '%s%%0%dd.png' % (prefix, num_digits)
+  imgrot90_template = '%s%%0%dd_rot90.png' % (prefix, num_digits)
+  imgrot180_template = '%s%%0%dd_rot180.png' % (prefix, num_digits)
+  imgrot270_template = '%s%%0%dd_rot270.png' % (prefix, num_digits)
+
   scene_template = '%s%%0%dd.json' % (prefix, num_digits)
   blend_template = '%s%%0%dd.blend' % (prefix, num_digits)
   img_template = os.path.join(args.output_image_dir, img_template)
+  imgrot90_template = os.path.join(args.output_image_dir, imgrot90_template)
+  imgrot180_template = os.path.join(args.output_image_dir, imgrot180_template)
+  imgrot270_template = os.path.join(args.output_image_dir, imgrot270_template)
   scene_template = os.path.join(args.output_scene_dir, scene_template)
   blend_template = os.path.join(args.output_blend_dir, blend_template)
 
@@ -192,6 +203,10 @@ def main(args):
   all_scene_paths = []
   for i in range(args.num_images):
     img_path = img_template % (i + args.start_idx)
+    img90_path = imgrot90_template % (i + args.start_idx)
+    img180_path = imgrot180_template % (i + args.start_idx)
+    img270_path = imgrot270_template % (i + args.start_idx)
+
     scene_path = scene_template % (i + args.start_idx)
     all_scene_paths.append(scene_path)
     blend_path = None
@@ -209,7 +224,7 @@ def main(args):
       output_image=img_path,
       output_scene=scene_path,
       output_blendfile=blend_path,
-    )
+      output_rot_images=[img90_path, img180_path, img270_path])
 
   # After rendering all images, combine the JSON files for each scene into a
   # single JSON file.
@@ -229,7 +244,21 @@ def main(args):
   with open(args.output_scene_file, 'w') as f:
     json.dump(output, f)
 
+def rotateMatrix(a):
+   return np.array([[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]])
 
+def generate_point(direction_vector, origin):
+  x, y = direction_vector[:2]
+  angle = np.arctan2(y, x)
+  print(angle)
+  rot = rotateMatrix(angle)
+  p = [-6, -6]
+  while not in_bounds(p):
+    x = random.uniform(-6, 6)
+    y = random.uniform(0, 6)
+    p = [x, y]
+    p = p @ rot + [origin[0], origin[1]]
+  return p
 
 def render_scene(args,
     num_target_group=2,
@@ -239,6 +268,7 @@ def render_scene(args,
     output_image='render.png',
     output_scene='render_json',
     output_blendfile=None,
+    output_rot_images=['render_rot.png']
   ):
 
   # Load the main blendfile
@@ -293,14 +323,26 @@ def render_scene(args,
   def rand(L):
     return 2.0 * L * (random.random() - 0.5)
 
+
   # Add random jitter to camera position
-  if args.camera_jitter > 0:
-    for i in range(3):
-      bpy.data.objects['Camera'].location[i] += rand(args.camera_jitter)
+  # if args.camera_jitter > 0:
+  #   for i in range(3):
+  #     bpy.data.objects['Camera'].location[i] += rand(args.camera_jitter)
+
+
 
   # Figure out the left, up, and behind directions along the plane and record
   # them in the scene structure
   camera = bpy.data.objects['Camera']
+
+  print(camera)
+  print(camera.matrix_world)
+  print(camera.matrix_world.to_quaternion())
+  print(camera.location)
+  print(camera.rotation_euler)
+
+
+
   plane_normal = plane.data.vertices[0].normal
   cam_behind = camera.matrix_world.to_quaternion() * Vector((0, 0, -1))
   cam_left = camera.matrix_world.to_quaternion() * Vector((-1, 0, 0))
@@ -332,6 +374,9 @@ def render_scene(args,
     for i in range(3):
       bpy.data.objects['Lamp_Fill'].location[i] += rand(args.fill_light_jitter)
 
+
+
+
   # Now make some random objects
   objects, blender_objects, object_indices = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
@@ -348,6 +393,50 @@ def render_scene(args,
 
   with open(output_scene, 'w') as f:
     json.dump(scene_struct, f, indent=2)
+
+  originalx, originaly = camera.location.x, camera.location.y
+  for degree, file_name in zip([90, 180, 270], output_rot_images):
+
+    xy = np.array([originalx, originaly]) @ rotateMatrix(np.radians(degree))
+    x, y = xy
+    camera.location.x = x
+    camera.location.y = y
+
+
+    render_args.filepath = file_name
+
+    if degree == 90:
+      ground = bpy.data.objects['Ground']
+
+      ground.location.x = -15
+      ground.location.y = 25
+
+      ground.rotation_euler[2] = math.radians(64)
+
+    elif degree == 180:
+      ground = bpy.data.objects['Ground']
+
+      ground.location.x = 24
+      ground.location.y = 22
+
+      ground.rotation_euler[2] = math.radians(334)
+
+    elif degree == 270:
+      ground = bpy.data.objects['Ground']
+
+      ground.location.x = 15
+      ground.location.y = -24
+
+      ground.rotation_euler[2] = math.radians(244)
+
+
+
+    while True:
+      try:
+        bpy.ops.render.render(write_still=True)
+        break
+      except Exception as e:
+        print(e)
 
   if output_blendfile is not None:
     bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
@@ -373,6 +462,27 @@ def load_properties(filename):
 
   return loaded_properties
 
+
+def generate_object(loaded_properties, scene_struct, positions,
+                    fixed_object=None, fix_target=False, direction='left'):
+
+  attributes = generate_random_attributes(loaded_properties, fix_target=fix_target)
+  if fixed_object is not None:
+    x, y, theta = generate_position_controlled(scene_struct, fixed_object, direction=direction)
+  else:
+    x, y, theta = generate_position()
+  succeeded = check_distance_and_margin(positions, x, y, attributes['size'][1], scene_struct)
+  while not succeeded:
+    if fixed_object is not None:
+      x, y, theta = generate_position_controlled(scene_struct, fixed_object, direction=direction)
+    else:
+      x, y, theta = generate_position()
+    succeeded = check_distance_and_margin(positions, x, y, attributes['size'][1], scene_struct)
+
+
+
+  return attributes, x, y, theta
+
 def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera):
   """
   Add target objects, target group objects and non-target group objects to the current blender scene
@@ -388,66 +498,97 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
     'target_group': [],
     'non_target_group': []
   }
-  
-  # target object
-  target_attributes = generate_random_attributes(loaded_properties)
+
+  distractor = generate_random_attributes(loaded_properties)
   x, y, theta = generate_position()
+  place_object(distractor, x, y, theta, positions, objects, blender_objects, camera)
+
+  p1 = [x, y]
+
+  distractor = objects[0]
+
+  target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
+                                                   fix_target=True, fixed_object=distractor, direction='left')
+  p2 = [x, y]
   place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
-  
-  # keeps track, which object is added
-  object_index = 0
-  group_indices['target'].append(object_index)
 
-  
-  # target group
-  for i in range(1, num_target_group + 1):
-    object_index += i
-    object_attributes = generate_related_attributes(target_attributes,
-                                                    args.target_group_attributes,
-                                                    args.target_group_relations,
-                                                    loaded_properties)
+  target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
+                                                   fix_target=True, fixed_object=distractor, direction='right')
+  p3 = [x, y]
+  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
 
-    num_tries = 0
-    while True:
-      num_tries += 1
-      if num_tries > args.max_retries:
-        for obj in blender_objects:
-          utils.delete_object(obj)
-        return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
-      
-      x, y, theta = generate_position()
-      succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
+  # plot(p1, p2, p3, scene_struct['directions']['left'], scene_struct['directions']['right'])
 
-      if succeded:
-        break
-    
-    place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
-    group_indices['target_group'].append(object_index)
+  print('points')
+  print(p1)
+  print(p2)
+  print(p3)
 
-  # non-target group
-  for i in range(1, num_non_target_group + 1):
-    object_index += i
-    object_attributes = generate_related_attributes(target_attributes,
-                                                    args.non_target_group_attributes,
-                                                    args.non_target_group_relations,
-                                                    loaded_properties)
 
-    num_tries = 0
-    while True:
-      num_tries += 1
-      if num_tries > args.max_retries:
-        for obj in blender_objects:
-          utils.delete_object(obj)
-        return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
-      
-      x, y, theta = generate_position()
-      succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
+  #
+  # # target object
+  # target_attributes = generate_random_attributes(loaded_properties, fix_target=True)
+  # # x, y, theta = generate_position()
+  # x, y, theta = generate_position()
+  # place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
+  #
 
-      if succeded:
-        break
 
-    place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
-    group_indices['non_target_group'].append(object_index)
+
+  # # keeps track, which object is added
+  # object_index = 0
+  # group_indices['target'].append(object_index)
+  #
+  #
+  # # target group
+  # for i in range(1, num_target_group + 1):
+  #   object_index += 1
+  #   object_attributes = generate_related_attributes(target_attributes,
+  #                                                   args.target_group_attributes,
+  #                                                   args.target_group_relations,
+  #                                                   loaded_properties)
+  #
+  #   num_tries = 0
+  #   while True:
+  #     num_tries += 1
+  #     if num_tries > args.max_retries:
+  #       for obj in blender_objects:
+  #         utils.delete_object(obj)
+  #       return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+  #
+  #     x, y, theta = generate_position_controlled(scene_struct, objects[0])
+  #     succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
+  #
+  #     if succeded:
+  #       break
+  #
+  #   place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
+  #   group_indices['target_group'].append(object_index)
+  #
+  # # non-target group
+  # for i in range(1, num_non_target_group + 1):
+  #   object_index += 1
+  #   object_attributes = generate_related_attributes(target_attributes,
+  #                                                   args.non_target_group_attributes,
+  #                                                   args.non_target_group_relations,
+  #                                                   loaded_properties)
+  #
+  #   num_tries = 0
+  #   while True:
+  #     num_tries += 1
+  #     if num_tries > args.max_retries:
+  #       for obj in blender_objects:
+  #         utils.delete_object(obj)
+  #       return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+  #
+  #     x, y, theta = generate_position_controlled(scene_struct, objects[0])
+  #     succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
+  #
+  #     if succeded:
+  #       break
+  #
+  #   place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
+  #   group_indices['non_target_group'].append(object_index)
 
 
   # Check that all objects are at least partially visible in the rendered image
@@ -462,12 +603,96 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
 
   return objects, blender_objects, group_indices
 
+def get_coords(vector, origin, length, negative=True):
+  if negative:
+    x = np.linspace(-length, length)
+  else:
+    x = np.linspace(0, length)
+  xs = [x0 * vector[0] + origin[0] for x0 in x]
+  ys = [y0 * vector[1] + origin[1] for y0 in x]
+  return xs, ys
+
+
 def generate_position():
+  #TODO This seems like the place to decide where the object is placed
   x = random.uniform(-3, 3)
   y = random.uniform(-3, 3)
-  
   # Choose random orientation for the object.
   theta = 360.0 * random.random()
+
+  return x, y, theta
+
+
+def in_bounds(point):
+  x, y = point
+
+  return -3 <= x <= 3 and -3 <= y <= 3
+
+
+def line_from_coord(dir_vector, origin):
+  x1, y1, _ = origin
+  dx, dy, _ = dir_vector
+  x2, y2 = x1 + dx, y1 + dy
+  p1 = (x1, y1)
+  p2 = (x2, y2)
+
+  A = (p1[1] - p2[1])
+  B = (p2[0] - p1[0])
+  C = (p1[0] * p2[1] - p2[0] * p1[1])
+
+  return A, B, -C
+
+def get_coords(vector, origin, length):
+  x = np.linspace(-length, length)
+  xs = [x0 * vector[0] + origin[0] for x0 in x]
+  ys = [y0 * vector[1] + origin[1] for y0 in x]
+  return xs, ys
+
+
+def is_left(a, b, c):
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) > 0;
+
+def is_right(a, b, c):
+  return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]) < 0;
+
+
+def is_valid(int1, int2, point, direction='left'):
+  if direction == 'left':
+    return is_left(int1, int2, point) and in_bounds(point)
+  elif direction == 'right':
+    return is_right(int1, int2, point) and in_bounds(point)
+  else:
+    raise NotImplementedError()
+
+def intersection(L1, L2):
+  D = L1[0] * L2[1] - L1[1] * L2[0]
+  Dx = L1[2] * L2[1] - L1[1] * L2[2]
+  Dy = L1[0] * L2[2] - L1[2] * L2[0]
+  if D != 0:
+    x = Dx / D
+    y = Dy / D
+    return x, y
+  else:
+    return False
+
+up_absolute = (0, 1, 0)
+right_absolute = (1, 0, 0)
+boundary_lines = [line_from_coord(up_absolute, (-3, 0, 0)),
+                  line_from_coord(up_absolute, (3, 0, 0)),
+                  line_from_coord(right_absolute, (0, -3, 0)),
+                  line_from_coord(right_absolute, (0, 3, 0))]
+
+def generate_position_controlled(scene_struct, fixed_obj, direction='left'):
+  dir_vector = scene_struct['directions'][direction]
+  coord = fixed_obj['3d_coords']
+
+  x, y = generate_point(dir_vector, coord)
+
+  # Choose random orientation for the object.
+  theta = 360.0 * random.random()
+  print(direction, dir_vector)
+  print("coord", x, y, theta)
+
 
   return x, y, theta
 
@@ -496,10 +721,18 @@ def check_distance_and_margin(positions, x, y, r, scene_struct):
 
   return dists_good and margins_good
 
-def generate_random_attributes(loaded_properties):
+def generate_random_attributes(loaded_properties, fix_target=False):
   attributes = {}
   # Choose a random size
   attributes['size'] = random.choice(loaded_properties['size_mapping'])
+
+  if fix_target:
+    attributes['size'] = loaded_properties['size_mapping'][0]
+    attributes['color'] = 'red', loaded_properties['color_name_to_rgba']['red']
+    attributes['material'] = loaded_properties['material_mapping'][0]
+    attributes['object'] = loaded_properties['object_mapping'][0]
+
+    return attributes
 
   # Choose random color and shape
   if loaded_properties['shape_color_combos'] is None:
