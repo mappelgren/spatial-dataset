@@ -13,7 +13,7 @@ from datetime import datetime as dt
 from render_utils import render
 from scene_util import load_everything, set_up_camera, set_up_lights, save_scene_struct, rotate_camera
 
-from object_definition import generate_object
+from object_definition import generate_object, ExceededMaxTriesError
 from object_definition import generate_random_attributes, load_properties, Relation
 from positioning import generate_position
 from positioning_util import compute_all_relationships, place_object
@@ -292,6 +292,62 @@ def render_scene(args,
   #   bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
 
 
+def add_object_random_position(args, fixed_attributes=None):
+    if fixed_attributes is None:
+        attributes = generate_random_attributes(args['properties'])
+    else:
+        attributes = fixed_attributes
+    x, y, theta = generate_object(attributes, args['scene_struct'], args['positions'], args=args['args'])
+    return place_object(attributes, x, y, theta, args['positions'], args['objects'],
+                        args['blender_objects'], args['camera'], args['args']), attributes
+
+def add_object(fixed_object, direction, args, fixed_attributes=None):
+    if fixed_attributes is None:
+        attributes = generate_random_attributes(args['properties'])
+    else:
+        attributes = fixed_attributes
+    x, y, theta = generate_object(attributes, args['scene_struct'], args['positions'],
+                                  fixed_object=fixed_object, direction=direction, args=args['args'])
+    return place_object(attributes, x, y, theta, args['positions'], args['objects'],
+                        args['blender_objects'], args['camera'], args['args']), attributes
+
+directions = ['left', 'right', 'front', 'behind']
+opposite = {'left':'right', 'right':'left', 'front':'behind', 'behind':'front'}
+
+
+def one_in_middle(args):
+    dir = random.choice(directions)
+
+    distractor, _ = add_object_random_position(args)
+    _, target_attributes = add_object(distractor, dir, args)
+    add_object(distractor,opposite[dir], args, fixed_attributes=target_attributes)
+
+
+def one_splayed(args):
+    dir1 = dir2 = random.choice(directions)
+    while dir2 == dir1:
+        dir2 = random.choice(directions)
+
+    distractor, _ = add_object_random_position(args)
+    _, target_attributes = add_object(distractor, dir1, args)
+    add_object(distractor, dir2, args, fixed_attributes=target_attributes)
+
+
+def two_ambiguous(args):
+
+    o1, attributes = add_object_random_position(args)
+    add_object_random_position(args, fixed_attributes=attributes)
+
+def row(args):
+    dir = random.choice(directions)
+
+    distractor, distractor_attributes = add_object_random_position(args)
+    o1, target_attributes = add_object(distractor, dir, args)
+    o2, _ = add_object(o1, dir, args, fixed_attributes=distractor_attributes)
+    add_object(o2, dir, args, fixed_attributes=target_attributes)
+
+
+
 def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera):
   """
   Add target objects, target group objects and non-target group objects to the current blender scene
@@ -308,88 +364,17 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
     'non_target_group': []
   }
 
-  distractor = generate_random_attributes(loaded_properties)
-  x, y, theta = generate_position()
-  place_object(distractor, x, y, theta, positions, objects, blender_objects, camera, args)
+  adding_object_args = {'properties':loaded_properties, 'scene_struct':scene_struct, 'positions': positions,
+                        'objects':objects, 'blender_objects':blender_objects, 'camera':camera, 'args':args}
 
-
-  distractor = objects[0]
-
-  target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
-                                                   fix_target=True, fixed_object=distractor, direction='left', args=args)
-  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera, args)
-
-  target_attributes, x, y, theta = generate_object(loaded_properties, scene_struct, positions,
-                                                   fix_target=True, fixed_object=distractor, direction='right', args=args)
-  place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera, args)
-
-
-
-  #
-  # # target object
-  # target_attributes = generate_random_attributes(loaded_properties, fix_target=True)
-  # # x, y, theta = generate_position()
-  # x, y, theta = generate_position()
-  # place_object(target_attributes, x, y, theta, positions, objects, blender_objects, camera)
-  #
-
-
-
-  # # keeps track, which object is added
-  # object_index = 0
-  # group_indices['target'].append(object_index)
-  #
-  #
-  # # target group
-  # for i in range(1, num_target_group + 1):
-  #   object_index += 1
-  #   object_attributes = generate_related_attributes(target_attributes,
-  #                                                   args.target_group_attributes,
-  #                                                   args.target_group_relations,
-  #                                                   loaded_properties)
-  #
-  #   num_tries = 0
-  #   while True:
-  #     num_tries += 1
-  #     if num_tries > args.max_retries:
-  #       for obj in blender_objects:
-  #         utils.delete_object(obj)
-  #       return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
-  #
-  #     x, y, theta = generate_position_controlled(scene_struct, objects[0])
-  #     succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
-  #
-  #     if succeded:
-  #       break
-  #
-  #   place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
-  #   group_indices['target_group'].append(object_index)
-  #
-  # # non-target group
-  # for i in range(1, num_non_target_group + 1):
-  #   object_index += 1
-  #   object_attributes = generate_related_attributes(target_attributes,
-  #                                                   args.non_target_group_attributes,
-  #                                                   args.non_target_group_relations,
-  #                                                   loaded_properties)
-  #
-  #   num_tries = 0
-  #   while True:
-  #     num_tries += 1
-  #     if num_tries > args.max_retries:
-  #       for obj in blender_objects:
-  #         utils.delete_object(obj)
-  #       return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
-  #
-  #     x, y, theta = generate_position_controlled(scene_struct, objects[0])
-  #     succeded = check_distance_and_margin(positions, x, y, object_attributes['size'][1], scene_struct)
-  #
-  #     if succeded:
-  #       break
-  #
-  #   place_object(object_attributes, x, y, theta, positions, objects, blender_objects, camera)
-  #   group_indices['non_target_group'].append(object_index)
-
+  try:
+      # one_in_middle(adding_object_args)
+    # two_ambiguous(adding_object_args)
+    row(adding_object_args)
+  except ExceededMaxTriesError:
+    for obj in blender_objects:
+      utils.delete_object(obj)
+    return add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
   # Check that all objects are at least partially visible in the rendered image
   all_visible = check_visibility(blender_objects, args.min_pixels_per_object)

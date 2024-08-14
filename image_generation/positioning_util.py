@@ -33,6 +33,11 @@ def compute_all_relationships(scene_struct, eps=0.2):
   return all_relationships
 
 
+def attributes_from_object(obj):
+    return {
+
+    }
+
 def place_object(attributes, x, y, theta, positions, objects, blender_objects, camera, args):
     # For cube, adjust the size a bit
     r = attributes['size'][1]
@@ -50,7 +55,7 @@ def place_object(attributes, x, y, theta, positions, objects, blender_objects, c
 
     # Record data about the object in the scene data structure
     pixel_coords = utils.get_camera_coords(camera, obj.location)
-    objects.append({
+    object = {
       'shape': attributes['object'][1],
       'size': attributes['size'][0],
       'material': attributes['material'][1],
@@ -58,7 +63,9 @@ def place_object(attributes, x, y, theta, positions, objects, blender_objects, c
       'rotation': theta,
       'pixel_coords': {0:pixel_coords},
       'color': attributes['color'][0],
-    })
+    }
+    objects.append(object)
+    return object
 
 
 def check_distance_and_margin(positions, x, y, r, scene_struct, args):

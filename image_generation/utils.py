@@ -8,7 +8,6 @@
 import sys, random, os
 import bpy, bpy_extras
 
-import image_generation.render_utils
 
 """
 Some utility functions for interacting with Blender
@@ -58,9 +57,9 @@ def get_camera_coords(cam, pos):
   """
   scene = bpy.context.scene
   x, y, z = bpy_extras.object_utils.world_to_camera_view(scene, cam, pos)
-  scale = image_generation.render_utils.render.resolution_percentage / 100.0
-  w = int(scale * image_generation.render_utils.render.resolution_x)
-  h = int(scale * image_generation.render_utils.render.resolution_y)
+  scale = bpy.context.scene.render.resolution_percentage / 100.0
+  w = int(scale * bpy.context.scene.render.resolution_x)
+  h = int(scale * bpy.context.scene.render.resolution_y)
   px = int(round(x * w))
   py = int(round(h - y * h))
   return (px, py, z)
