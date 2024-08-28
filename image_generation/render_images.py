@@ -292,22 +292,26 @@ def render_scene(args,
   #   bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
 
 
-def add_object_random_position(args, fixed_attributes=None):
+def add_object_random_position(args, fixed_attributes=None, target_group='non_target_group'):
     if fixed_attributes is None:
         attributes = generate_random_attributes(args['properties'])
     else:
         attributes = fixed_attributes
     x, y, theta = generate_object(attributes, args['scene_struct'], args['positions'], args=args['args'])
+    args['group_indices'][target_group].append(args['obj_index'])
+    args['obj_index'] += 1
     return place_object(attributes, x, y, theta, args['positions'], args['objects'],
                         args['blender_objects'], args['camera'], args['args']), attributes
 
-def add_object(fixed_object, direction, args, fixed_attributes=None):
+def add_object(fixed_object, direction, args, fixed_attributes=None, target_group='non_target_group'):
     if fixed_attributes is None:
         attributes = generate_random_attributes(args['properties'])
     else:
         attributes = fixed_attributes
     x, y, theta = generate_object(attributes, args['scene_struct'], args['positions'],
                                   fixed_object=fixed_object, direction=direction, args=args['args'])
+    args['group_indices'][target_group].append(args['obj_index'])
+    args['obj_index'] += 1
     return place_object(attributes, x, y, theta, args['positions'], args['objects'],
                         args['blender_objects'], args['camera'], args['args']), attributes
 
@@ -317,10 +321,9 @@ opposite = {'left':'right', 'right':'left', 'front':'behind', 'behind':'front'}
 
 def one_in_middle(args):
     dir = random.choice(directions)
-
     distractor, _ = add_object_random_position(args)
-    _, target_attributes = add_object(distractor, dir, args)
-    add_object(distractor,opposite[dir], args, fixed_attributes=target_attributes)
+    _, target_attributes = add_object(distractor, dir, args, target_group='target')
+    add_object(distractor,opposite[dir], args, fixed_attributes=target_attributes, target_group='target_group')
 
 
 def one_splayed(args):
@@ -365,7 +368,8 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   }
 
   adding_object_args = {'properties':loaded_properties, 'scene_struct':scene_struct, 'positions': positions,
-                        'objects':objects, 'blender_objects':blender_objects, 'camera':camera, 'args':args}
+                        'objects':objects, 'blender_objects':blender_objects, 'camera':camera, 'args':args,
+                        'group_indices':group_indices, 'obj_index':0}
 
   try:
      one_in_middle(adding_object_args)
