@@ -368,9 +368,9 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
                         'objects':objects, 'blender_objects':blender_objects, 'camera':camera, 'args':args}
 
   try:
-      # one_in_middle(adding_object_args)
+     one_in_middle(adding_object_args)
     # two_ambiguous(adding_object_args)
-    row(adding_object_args)
+    # row(adding_object_args)
   except ExceededMaxTriesError:
     for obj in blender_objects:
       utils.delete_object(obj)
