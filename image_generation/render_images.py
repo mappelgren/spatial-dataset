@@ -10,6 +10,11 @@ from __future__ import print_function
 import sys, random, argparse, json, os
 from datetime import datetime as dt
 
+import bpy
+src_dir = os.path.dirname(bpy.data.filepath)
+if src_dir not in sys.path:
+  sys.path.append(src_dir)
+
 from render_utils import render
 from scene_util import load_everything, set_up_camera, set_up_lights, save_scene_struct, rotate_camera
 
