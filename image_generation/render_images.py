@@ -189,8 +189,8 @@ def main(args):
   imgrot90_template = os.path.join(args.output_image_dir, imgrot90_template)
   imgrot180_template = os.path.join(args.output_image_dir, imgrot180_template)
   imgrot270_template = os.path.join(args.output_image_dir, imgrot270_template)
-  scene_template = os.path.join(args.output_scene_dir, scene_template)
-  blend_template = os.path.join(args.output_blend_dir, blend_template)
+  #scene_template = os.path.join(args.output_scene_dir, scene_template)
+  #blend_template = os.path.join(args.output_blend_dir, blend_template)
 
   if not os.path.isdir(args.output_image_dir):
     os.makedirs(args.output_image_dir)
@@ -202,9 +202,6 @@ def main(args):
   all_scene_paths = []
   for i in range(args.num_images):
     img_path = img_template % (i + args.start_idx)
-    img90_path = imgrot90_template % (i + args.start_idx)
-    img180_path = imgrot180_template % (i + args.start_idx)
-    img270_path = imgrot270_template % (i + args.start_idx)
 
     scene_path = scene_template % (i + args.start_idx)
     all_scene_paths.append(scene_path)
@@ -223,7 +220,7 @@ def main(args):
       output_image=img_path,
       output_scene=scene_path,
       output_blendfile=blend_path,
-      output_rot_images=[img90_path, img180_path, img270_path])
+      base_path=args.output_image_dir,)
 
   # After rendering all images, combine the JSON files for each scene into a
   # single JSON file.
@@ -251,7 +248,9 @@ def render_scene(args,
     output_image='render.png',
     output_scene='render_json',
     output_blendfile=None,
-    output_rot_images=['render_rot.png']
+    output_rot_images=['rot0', 'rot90', 'rot180', 'rot270'],
+    base_path=None,
+    old_scene_struct=None
   ):
 
   # This will give ground-truth information about the scene and its objects
@@ -270,15 +269,22 @@ def render_scene(args,
   set_up_lights(args)
 
   # Now make some random objects
-  add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+  scene1 = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
 
-  render(output_image, render_args)
+  #render(output_image, render_args)
 
   original_x, original_y = camera.location.x, camera.location.y
 
-  for degree, file_name in zip([90, 180, 270], output_rot_images):
+  for degree, rotation_dir in zip([0, 90, 180, 270], output_rot_images):
+    if degree != 0:
+        rotate_camera(camera, original_x, original_y, degree)
 
-    rotate_camera(camera, original_x, original_y, degree)
+    if old_scene_struct is None:
+        target = 'target'
+    else:
+        target = 'distractor'
+
+    file_name = os.path.join(base_path, 'images', target, rotation_dir, output_image)
 
     render(file_name, render_args)
 
@@ -286,11 +292,16 @@ def render_scene(args,
         pixel_coords = utils.get_camera_coords(camera, obj['3d_coords'])
         obj['pixel_coords'][degree] = pixel_coords
 
-  save_scene_struct(output_scene, scene_struct)
+  scene_file = os.path.join(base_path, 'scenes', target, output_scene)
+
+  save_scene_struct(scene_file, scene_struct)
 
   # if output_blendfile is not None:
   #   bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
-
+  if old_scene_struct is None:
+      return render_scene(args, num_target_group, num_non_target_group,
+                        output_index, output_split, output_image, output_scene, output_blendfile,
+                        output_rot_images, scene1)
 
 def add_object_random_position(args, fixed_attributes=None):
     if fixed_attributes is None:
@@ -390,7 +401,7 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   scene_struct['relationships'] = compute_all_relationships(scene_struct)
   scene_struct['groups'] = group_indices
 
-  # return objects, blender_objects, group_indices
+  return scene_struct
 
 
 if __name__ == '__main__':
