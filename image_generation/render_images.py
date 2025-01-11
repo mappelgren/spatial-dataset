@@ -11,9 +11,13 @@ import sys, random, argparse, json, os
 from datetime import datetime as dt
 
 import bpy
+
+
 src_dir = os.path.dirname(bpy.data.filepath)
 if src_dir not in sys.path:
   sys.path.append(src_dir)
+
+from object_definition import generate_related_attributes
 
 from render_utils import render
 from scene_util import load_everything, set_up_camera, set_up_lights, save_scene_struct, rotate_camera
@@ -180,6 +184,9 @@ parser.add_argument('--render_tile_size', default=256, type=int,
          "rendering may achieve better performance using smaller tile sizes " +
          "while larger tile sizes may be optimal for GPU-based rendering.")
 
+parser.add_argument('--render_function', default='middle', type=str,
+                    help='selects which type of images are generated')
+
 def main(args):
   num_digits = 6
   prefix = '%s_%s_' % (args.filename_prefix, args.split)
@@ -204,7 +211,8 @@ def main(args):
     img_path = img_template % (i + args.start_idx)
 
     scene_path = scene_template % (i + args.start_idx)
-    all_scene_paths.append(scene_path)
+    all_scene_paths.append(os.path.join(args.output_scene_dir, 'target', scene_path))
+    all_scene_paths.append(os.path.join(args.output_scene_dir, 'distractor', scene_path))
     blend_path = None
     if args.save_blendfiles == 1:
       blend_path = blend_template % (i + args.start_idx)
@@ -220,6 +228,7 @@ def main(args):
       output_scene=scene_path,
       output_blendfile=blend_path,
       base_path=args.output_image_dir,
+      base_scene_path=args.output_scene_dir,
       output_image=img_path,
      )
 
@@ -251,6 +260,7 @@ def render_scene(args,
     output_blendfile=None,
     output_rot_images=['rot0', 'rot90', 'rot180', 'rot270'],
     base_path=None,
+    base_scene_path=None,
     old_scene_struct=None
  ):
 
@@ -271,22 +281,22 @@ def render_scene(args,
   set_up_lights(args)
 
   # Now make some random objects
-  scene1 = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera)
+  scene1 = add_objects(scene_struct, num_target_group, num_non_target_group, args, camera, old_scene_struct)
 
   #render(output_image, render_args)
 
   original_x, original_y = camera.location.x, camera.location.y
 
+  if old_scene_struct is None:
+      target = 'target'
+  else:
+      target = 'distractor'
+
   for degree, rotation_dir in zip([0, 90, 180, 270], output_rot_images):
     if degree != 0:
         rotate_camera(camera, original_x, original_y, degree)
 
-    if old_scene_struct is None:
-        target = 'target'
-    else:
-        target = 'distractor'
-
-    file_name = os.path.join(base_path, 'images', target, rotation_dir, output_image)
+    file_name = os.path.join(base_path, target, rotation_dir, output_image)
 
     render(file_name, render_args)
 
@@ -294,21 +304,23 @@ def render_scene(args,
         pixel_coords = utils.get_camera_coords(camera, obj['3d_coords'])
         obj['pixel_coords'][degree] = pixel_coords
 
-  scene_file = os.path.join(base_path, 'scenes', target, output_scene)
-
+  scene_file = os.path.join(base_scene_path, target, output_scene)
+  os.makedirs(os.path.join(base_scene_path, target), exist_ok=True)
   save_scene_struct(scene_file, scene_struct)
-
-
 
   # if output_blendfile is not None:
   #   bpy.ops.wm.save_as_mainfile(filepath=output_blendfile)
   if old_scene_struct is None:
-      return render_scene(args, num_target_group, num_non_target_group,
-                        output_index, output_split, output_image, output_scene, output_blendfile,
-                        output_rot_images, scene1)
+      return render_scene(args, num_target_group, num_non_target_group, output_index, output_image,
+                        output_split, output_scene, output_blendfile, output_rot_images, base_path,
+                          base_scene_path, scene1)
 
-def add_object_random_position(args, fixed_attributes=None, target_group='non_target_group'):
-    if fixed_attributes is None:
+
+def add_object_random_position(args, fixed_attributes=None, target_group='non_target_group', avoid_attributes=None):
+    if avoid_attributes is not None:
+        r = Relation.HIGH
+        attributes = generate_related_attributes(avoid_attributes, ['color'], [r], args['properties'])
+    elif fixed_attributes is None:
         attributes = generate_random_attributes(args['properties'])
     else:
         attributes = fixed_attributes
@@ -317,6 +329,17 @@ def add_object_random_position(args, fixed_attributes=None, target_group='non_ta
     args['obj_index'] += 1
     return place_object(attributes, x, y, theta, args['positions'], args['objects'],
                         args['blender_objects'], args['camera'], args['args']), attributes
+
+def add_object_fixed_position(fixed_position, args, fixed_attributes=None):
+    if fixed_attributes is None:
+        attributes = generate_random_attributes(args['properties'])
+    else:
+        attributes = fixed_attributes
+    x, y, _ = fixed_position['3d_coords']
+    theta = fixed_position['rotation']
+    return place_object(attributes, x, y, theta, args['positions'], args['positions'],
+                 args['blender_objects'], args['camera'], args['args']), attributes
+
 
 def add_object(fixed_object, direction, args, fixed_attributes=None, target_group='non_target_group'):
     if fixed_attributes is None:
@@ -351,24 +374,41 @@ def one_splayed(args):
     add_object(distractor, dir2, args, fixed_attributes=target_attributes)
 
 
-def two_ambiguous(args):
-    global global_o1_attr 
-    global global_o2_attr
-    global global_dir
-    if global_o1_attr is None:
-        dir = random.choice(directions)
+same = None
 
-        o1, attributes = add_object_random_position(args)
-        o2, o2_attr = add_object(o1, dir, args)
-        global_o1_attr = attributes
-        global_o2_attr = o2_attr
-        global_dir = dir
+def two_ambiguous(args, fix_object_locations=True, same_objects=False):
+    if args['old_scene_struct'] is None:
+        global same
+        dir = random.choice(directions)
+        if same_objects:
+            if same is not None:
+                o1, attr1, o2, attr2, dir = same
+
+                o1, attributes = add_object_random_position(args, fixed_attributes=attr1)
+                o2, o2_attr = add_object(o1, dir, args, fixed_attributes=attr2)
+                out =  (o1, attributes, o2, o2_attr, dir)
+            else:
+                o1, attributes = add_object_random_position(args)
+                o2, o2_attr = add_object(o1, dir, args)
+                out =  (o1, attributes, o2, o2_attr, dir)
+                same = out
+        else:
+            o1, attributes = add_object_random_position(args)
+            o2, o2_attr = add_object(o1, dir, args)
+            out =  (o1, attributes, o2, o2_attr, dir)
+        print('Doing round 1')
+        print(out)
+        return out
     else:
-        o1, _ = add_object_random_position(args, fixed_attributes=global_o2_attr)
-        o2, o2_attr = add_object(o1, global_dir, args, fixed_attributes=global_o1_attr)
-        global_o1_attr = None
-        global_o2_attr = None
-        global_dir = None 
+        old_o1, old_o1_attributes, old_o2, old_o2_attributes, old_dir = args['old_scene_struct']
+        if fix_object_locations:
+            o1, attr = add_object_fixed_position(old_o1, args, fixed_attributes=old_o2_attributes)
+            o2, o2_attr = add_object_fixed_position(old_o2, args, fixed_attributes=old_o1_attributes)
+        else:
+            o1, attr = add_object_random_position(args, fixed_attributes=old_o2_attributes)
+            o2, o2_attr = add_object(o1, old_dir, args, fixed_attributes=old_o1_attributes)
+        out = (o1, attr, o2, o2_attr, old_dir)
+        return out
 
 
 def row(args):
@@ -380,15 +420,15 @@ def row(args):
     add_object(o2, dir, args, fixed_attributes=target_attributes)
 
 def one(args):
-    distractor, distractor_attributes = add_object_random_position(args, target_group='target')
+    if args['old_scene_struct'] is None:
+        distractor, distractor_attributes = add_object_random_position(args, target_group='target')
+    else:
+        _, old_attributes = args['old_scene_struct']
+        distractor, distractor_attributes = add_object_random_position(args, target_group='target', avoid_attributes=old_attributes)
+    return (distractor, distractor_attributes)
 
-global_o1 = None
-global_o1_attr = None
-global_o2 = None
-global_o2_attr = None
-global_dir = None
 
-def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera):
+def add_objects(scene_struct, num_target_group, num_non_target_group, args, camera, old_scene_struct=None):
   """
   Add target objects, target group objects and non-target group objects to the current blender scene
   """
@@ -406,11 +446,16 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
 
   adding_object_args = {'properties':loaded_properties, 'scene_struct':scene_struct, 'positions': positions,
                         'objects':objects, 'blender_objects':blender_objects, 'camera':camera, 'args':args,
-                        'group_indices':group_indices, 'obj_index':0}
+                        'group_indices':group_indices, 'obj_index':0, 'old_scene_struct':old_scene_struct}
 
   try:
-     #one(adding_object_args)
-     two_ambiguous(adding_object_args)
+      if args.render_function == 'one':
+        distractor_information = one(adding_object_args)
+      elif args.render_function == 'two_spatial':
+        distractor_information = two_ambiguous(adding_object_args)
+      elif args.render_function == 'two_spatial_same':
+        distractor_information = two_ambiguous(adding_object_args, same=True)
+
     # row(adding_object_args)
   except ExceededMaxTriesError:
     for obj in blender_objects:
@@ -431,7 +476,7 @@ def add_objects(scene_struct, num_target_group, num_non_target_group, args, came
   scene_struct['relationships'] = compute_all_relationships(scene_struct)
   scene_struct['groups'] = group_indices
 
-  return scene_struct
+  return distractor_information
 
 
 if __name__ == '__main__':

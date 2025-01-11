@@ -11,7 +11,8 @@ from positioning_util import check_distance_and_margin
 
 def generate_related_attributes(base_attributes, attributes_to_change: "list[str]", relations: "list[Relation]", loaded_properties):
   relation = random.choice(relations)
-
+  print("base attributes")
+  print(base_attributes)
   if relation == Relation.RANDOM:
     return generate_random_attributes(loaded_properties)
 
@@ -28,6 +29,8 @@ def generate_related_attributes(base_attributes, attributes_to_change: "list[str
     elif attribute == 'color':
       while attributes['color'] == base_attributes['color']:
         attributes['color'] = random.choice(list(loaded_properties['color_name_to_rgba'].items()))
+  print('attributes after')
+  print(attributes)
 
   return attributes
 
