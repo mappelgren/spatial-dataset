@@ -8,33 +8,33 @@ Thus, when generating the data we generate a series of pairs of scenes, target a
 
 In addition, the goal of the project is to allow for the agents to potentially see the scenes from different directions. To do this, we rotate the camera around and capture each scene from 4 different angles, 0, 90, 180, and 270. We do this for both scenes. This creates an output structure that looks like this:
 
-Dataset-name/
-    Target/
-        0/
-            img1.png
-            img2.png
-        90/
-            img1.png
-            img2.png
-        180/
-            img1.png
-            img2.png
-        270/
-            img1.png
-            img2.png
-    Distractor/
-        0/
-            img1.png
-            img2.png
-        90/
-            img1.png
-            img2.png
-        180/
-            img1.png
-            img2.png
-        270/
-            img1.png
-            img2.png
+                Dataset-name/
+                    Target/
+                        0/
+                            img1.png
+                            img2.png
+                        90/
+                            img1.png
+                            img2.png
+                        180/
+                            img1.png
+                            img2.png
+                        270/
+                            img1.png
+                            img2.png
+                    Distractor/
+                        0/
+                            img1.png
+                            img2.png
+                        90/
+                            img1.png
+                            img2.png
+                        180/
+                            img1.png
+                            img2.png
+                        270/
+                            img1.png
+                            img2.png
 
 There are a few different functions which can generate the images. There is one function for creating simpler datasets with single objects where the variation between target and distractor are on visual attributes. 
 The othe function is to create datasets which have the same objects but have mirrored spatial attributes. This is to test for the ability to describe spatial language. 
